@@ -7,6 +7,8 @@ from lib.lichess_types import GameEventType
 from collections.abc import Sequence
 from lib.timer import seconds
 from typing import TypeAlias
+from lib.ai_chat import AIChatHandler
+
 MULTIPROCESSING_LIST_TYPE: TypeAlias = Sequence[model.Challenge]
 
 logger = logging.getLogger(__name__)
@@ -45,6 +47,7 @@ class Conversation:
         self.version = version
         self.challengers = challenge_queue
         self.messages: list[ChatLine] = []
+        self.ai_chat = AIChatHandler(game, engine)
 
     command_prefix = "!"
 
@@ -56,8 +59,16 @@ class Conversation:
         """
         self.messages.append(line)
         logger.info(f"*** {self.game.url()} [{line.room}] {line.username}: {line.text}")
-        if line.text[0] == self.command_prefix:
+
+        # Reageer niet op eigen berichten
+        if line.username == self.game.username:
+            return
+
+        if line.text and line.text.startswith(self.command_prefix):
             self.command(line, line.text[1:].lower())
+        elif line.text:
+            # Gebruik de AI handler voor gewone berichten
+            self.ai_chat.get_ai_response(line.text, lambda reply: self.send_reply(line, reply))
 
     def command(self, line: ChatLine, cmd: str) -> None:
         """

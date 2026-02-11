@@ -9,6 +9,8 @@ import logging
 import logging.handlers
 import multiprocessing
 import signal
+import threading
+import queue
 import time
 import datetime
 import backoff
@@ -709,15 +711,55 @@ def play_game(li: lichess.Lichess,
         board = chess.Board()
         game_stream = itertools.chain([json.dumps(game.state).encode("utf-8")], lines)
         quit_after_all_games_finish = config.quit_after_all_games_finish
+        
+        # Queue voor updates die de engine moet verwerken
+        update_queue = queue.Queue()
+        
+        def stream_processor():
+            """Thread die de stream uitleest en chat direct verwerkt."""
+            nonlocal stay_in_game
+            try:
+                for binary_chunk in game_stream:
+                    if stop.terminated and not quit_after_all_games_finish or stop.force_quit:
+                        break
+                        
+                    upd = cast(GameEventType, json.loads(binary_chunk.decode("utf-8"))) if binary_chunk else {}
+                    if not upd:
+                        # Ping versturen naar de hoofdthread om blokkade op te heffen
+                        update_queue.put({"type": "ping"})
+                        continue
+                        
+                    u_type = upd.get("type")
+                    if u_type == "chatLine":
+                        conversation.react(ChatLine(upd))
+                    else:
+                        # Stuur gameState en andere relevante events naar de engine loop
+                        update_queue.put(upd)
+                        if u_type == "gameState" and is_game_over_state(upd):
+                            break
+            except Exception:
+                logger.exception("Error in stream processor thread")
+            finally:
+                update_queue.put(None) # Signaal dat de stream is gestopt
+
+        def is_game_over_state(upd):
+            return upd.get("status") != "started"
+
         stay_in_game = True
+        processor_thread = threading.Thread(target=stream_processor, daemon=True)
+        processor_thread.start()
+
         while stay_in_game and (not stop.terminated or quit_after_all_games_finish) and not stop.force_quit:
             move_attempted = False
             try:
-                upd = next_update(game_stream)
-                u_type = upd["type"] if upd else "ping"
-                if u_type == "chatLine":
-                    conversation.react(ChatLine(upd))
-                elif u_type == "gameState":
+                # Wacht op de volgende relevante update van de stream_processor
+                upd = update_queue.get(timeout=1.0)
+                if upd is None:
+                    stay_in_game = False
+                    continue
+                    
+                u_type = upd.get("type", "ping")
+                if u_type == "gameState":
                     game.state = upd
                     board = setup_board(game)
                     takeback_field = game.state.get("btakeback") if game.is_white else game.state.get("wtakeback")
@@ -751,17 +793,19 @@ def play_game(li: lichess.Lichess,
                         record_takeback(game, takebacks_accepted)
                         engine.discard_last_move_commentary()
 
-                    wbtime = upd[engine_wrapper.wbtime(board)]
-                    wbinc = upd[engine_wrapper.wbinc(board)]
+                    wbtime = upd.get(engine_wrapper.wbtime(board), 0)
+                    wbinc = upd.get(engine_wrapper.wbinc(board), 0)
                     terminate_time = msec(wbtime) + msec(wbinc) + seconds(60)
                     game.ping(abort_time, terminate_time, disconnect_time)
                     prior_game = copy.deepcopy(game)
                 elif u_type == "ping" and should_exit_game(board, game, prior_game, li, is_correspondence):
                     stay_in_game = False
-            except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError,
-                    StopIteration) as e:
-                stopped = isinstance(e, StopIteration)
-                stay_in_game = not stopped and (move_attempted or game_is_active(li, game.id))
+            except queue.Empty:
+                # Geen update ontvangen, check of we moeten afsluiten
+                if should_exit_game(board, game, prior_game, li, is_correspondence):
+                    stay_in_game = False
+            except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError) as e:
+                stay_in_game = move_attempted or game_is_active(li, game.id)
 
         pgn_record = try_get_pgn_game_record(li, config, game, board, engine)
     final_queue_entries(control_queue, correspondence_queue, game, is_correspondence, pgn_record, pgn_queue)
