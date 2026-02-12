@@ -36,6 +36,7 @@ from lib.lichess_types import (UserProfileType, EventType, GameType, GameEventTy
 from requests.exceptions import (ChunkedEncodingError, ConnectionError as RequestsConnectionError, HTTPError, ReadTimeout,
                                  RequestException)
 from rich.logging import RichHandler
+from rich.console import Console
 from collections import defaultdict
 from collections.abc import Iterator, MutableSequence
 from http.client import RemoteDisconnected
@@ -172,7 +173,8 @@ def logging_configurer(level: int, filename: str | None, disable_auto_logs: bool
     :param filename: The filename to write the logs to. If it is `None` then the logs aren't written to a file.
     :param disable_auto_logs: Whether to disable automatic logging.
     """
-    console_handler = RichHandler()
+    console = Console(width=200)
+    console_handler = RichHandler(show_path=False, rich_tracebacks=True, console=console)
     console_formatter = logging.Formatter("%(message)s")
     console_handler.setFormatter(console_formatter)
     console_handler.setLevel(level)
