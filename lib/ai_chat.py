@@ -10,16 +10,16 @@ logger = logging.getLogger(__name__)
 class AIChatHandler:
     """Handles AI logic using either a local Ollama instance or a Hugging Face model."""
 
-    def __init__(self, game, engine):
+    def __init__(self, game, engine, config):
         self.game = game
         self.engine = engine
+        self.config = config
         self.history = []  # List of messages: [{"role": "user", "content": "..."}, ...]
 
         # Get AI configuration
-        self.config = game.config.ai_chat
-        self.enabled = self.config.enabled
-        self.model = self.config.model
-        self.ollama_url = self.config.url
+        self.enabled = self.config.ai_chat.enabled
+        self.model = self.config.ai_chat.model
+        self.ollama_url = self.config.ai_chat.url
 
         self.generator = None
 
@@ -117,9 +117,11 @@ class AIChatHandler:
 
         response = requests.post(self.ollama_url + "/api/chat", json=payload, timeout=10)
         if response.status_code == 200:
-            ai_reply = response.json().get("response", "").strip()
+            json_resp = response.json()
+            ai_reply = json_resp.get("response", "").strip()
             self.history.append({"role": "assistant", "content": ai_reply})
             callback(ai_reply)
+            logger.info("Got AI response: " + ai_reply)
         else:
             logger.error(f"Ollama API error: {response.text}")
             callback("I'm lost for words...")

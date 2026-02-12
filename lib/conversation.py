@@ -1,6 +1,7 @@
 """Allows lichess-bot to send messages to the chat."""
 import logging
 from lib import model
+from lib.config import Configuration
 from lib.engine_wrapper import EngineWrapper
 from lib.lichess import Lichess
 from lib.lichess_types import GameEventType
@@ -30,7 +31,7 @@ class ChatLine:
 class Conversation:
     """Enables the bot to communicate with its opponent and the spectators."""
 
-    def __init__(self, game: model.Game, engine: EngineWrapper, li: Lichess, version: str,
+    def __init__(self, game: model.Game, engine: EngineWrapper, config: Configuration, li: Lichess, version: str,
                  challenge_queue: MULTIPROCESSING_LIST_TYPE) -> None:
         """
         Communication between lichess-bot and the game chats.
@@ -43,11 +44,12 @@ class Conversation:
         """
         self.game = game
         self.engine = engine
+        self.config = config
         self.li = li
         self.version = version
         self.challengers = challenge_queue
         self.messages: list[ChatLine] = []
-        self.ai_chat = AIChatHandler(game, engine)
+        self.ai_chat = AIChatHandler(game, engine, self.config)
 
     command_prefix = "!"
 
