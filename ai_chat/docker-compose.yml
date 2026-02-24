@@ -1,0 +1,19 @@
+services:
+  llama:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    ports:
+      - "5555:8080"
+    volumes:
+      - hf-cache:/root/.cache   # persists downloads between restarts
+    command:
+      [
+        "-hf", "ggml-org/gemma-3-1b-it-GGUF",
+        "--host", "0.0.0.0",
+        "--port", "8080",
+        "-c", "2048",
+        "-fa", "on"
+      ]
+    restart: unless-stopped
+
+volumes:
+  hf-cache:
