@@ -33,6 +33,7 @@ from lib.timer import Timer, seconds, msec, hours, to_seconds
 from lib.lichess import stop
 from lib.lichess_types import (UserProfileType, EventType, GameType, GameEventType, CONTROL_QUEUE_TYPE,
                                CORRESPONDENCE_QUEUE_TYPE, LOGGING_QUEUE_TYPE, PGN_QUEUE_TYPE)
+from extra_game_handlers import after_move
 from requests.exceptions import (ChunkedEncodingError, ConnectionError as RequestsConnectionError, HTTPError, ReadTimeout,
                                  RequestException)
 from rich.logging import RichHandler
@@ -766,6 +767,32 @@ def play_game(li: lichess.Lichess,
                     board = setup_board(game)
                     takeback_field = game.state.get("btakeback") if game.is_white else game.state.get("wtakeback")
 
+                    if game_changed(game, prior_game):
+                        current_moves = game.state["moves"].split()
+                        prior_moves = prior_game.state["moves"].split() if prior_game else []
+                        if len(current_moves) > len(prior_moves):
+                            hook_board = initial_board(game)
+                            for move_uci in prior_moves:
+                                try:
+                                    hook_board.push_uci(move_uci)
+                                except ValueError:
+                                    logger.exception(
+                                        f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
+                                    )
+                                    break
+
+                            if len(hook_board.move_stack) == len(prior_moves):
+                                for move_uci in current_moves[len(prior_moves):]:
+                                    mover_color = "white" if hook_board.turn == chess.WHITE else "black"
+                                    try:
+                                        hook_board.push_uci(move_uci)
+                                    except ValueError:
+                                        logger.exception(
+                                            f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
+                                        )
+                                        break
+                                    after_move(game, hook_board, move_uci, mover_color)
+
                     if not is_game_over(game) and is_engine_move(game, prior_game, board):
                         disconnect_time = correspondence_disconnect_time
                         say_hello(conversation, hello, hello_spectators, board)
@@ -894,17 +921,23 @@ def next_update(lines: Iterator[bytes]) -> GameEventType:
     return upd
 
 
-def setup_board(game: model.Game) -> chess.Board:
-    """Set up the board."""
+def initial_board(game: model.Game) -> chess.Board:
+    """Create the initial board for a game without applying moves."""
     if game.variant_name.lower() == "chess960":
         board = chess.Board(game.initial_fen, chess960=True)
     elif game.variant_name == "From Position":
         fen = cast(str, game.initial_fen)
         board = chess.Board(fen, chess960=model.is_chess_960(fen))
-
     else:
         VariantBoard = find_variant(game.variant_name)
         board = VariantBoard()
+
+    return board
+
+
+def setup_board(game: model.Game) -> chess.Board:
+    """Set up the board."""
+    board = initial_board(game)
 
     for move in game.state["moves"].split():
         try:
