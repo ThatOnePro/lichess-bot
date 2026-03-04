@@ -791,7 +791,7 @@ def play_game(li: lichess.Lichess,
                                             f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
                                         )
                                         break
-                                    after_move(game, hook_board, move_uci, mover_color)
+                                    after_move(game, hook_board, move_uci, mover_color, conversation)
 
                     if not is_game_over(game) and is_engine_move(game, prior_game, board):
                         disconnect_time = correspondence_disconnect_time

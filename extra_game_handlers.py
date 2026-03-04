@@ -24,8 +24,12 @@ def is_supported_extra(challenge: model.Challenge) -> bool:  # noqa: ARG001
 
 
 def after_move(
-    game: model.Game, board: chess.Board, move_uci: str, mover_color: str
-) -> None:  # noqa: ARG001
+    game: model.Game,
+    board: chess.Board,
+    move_uci: str,
+    mover_color: str,
+    conversation=None,
+) -> None:
     """
     Hook called after every new move (player or bot).
 
@@ -33,6 +37,7 @@ def after_move(
     :param board: The board after the move has been applied.
     :param move_uci: The move in UCI format.
     :param mover_color: "white" or "black" indicating who made the move.
+    :param conversation: The Conversation instance used to send chat messages (optional).
     """
     logger = logging.getLogger(__name__)
     logger.info(
@@ -42,4 +47,12 @@ def after_move(
         move_uci,
         mover_color,
     )
-    return
+
+    if conversation is not None:
+        ai = conversation.ai_chat
+        ai.after_move(
+            board,
+            move_uci,
+            mover_color,
+            lambda msg: conversation.send_message("player", msg),
+        )
