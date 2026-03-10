@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import TypeAlias
 
 from lib import model
-from lib.ai_chat import AIChatHandler
+from ai_chat import AIChatHandler
 from lib.config import Configuration
 from lib.engine_wrapper import EngineWrapper
 from lib.lichess import Lichess
