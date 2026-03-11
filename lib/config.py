@@ -256,6 +256,10 @@ def insert_default_values(CONFIG: CONFIG_DICT_TYPE) -> None:
         for target in ["", "_spectators"]:
             set_config_default(CONFIG, "greeting", key=greeting + target, default="", force_empty_values=True)
 
+    set_config_default(CONFIG, "ai_chat", key="enabled", default=False)
+    set_config_default(CONFIG, "ai_chat", key="model", default="llama3.2:1b")
+    set_config_default(CONFIG, "ai_chat", key="url", default="http://localhost:11434/api/generate")
+
 
 def process_block_list(CONFIG: CONFIG_DICT_TYPE) -> None:
     """

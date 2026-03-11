@@ -1,17 +1,48 @@
 """Allows lichess-bot to send messages to the chat."""
 import logging
+from collections.abc import Sequence
+from typing import TypeAlias
+
 from lib import model
+from ai_chat import AIChatHandler
+from lib.config import Configuration
 from lib.engine_wrapper import EngineWrapper
 from lib.lichess import Lichess
 from lib.lichess_types import GameEventType
-from collections.abc import Sequence
 from lib.timer import seconds
-from typing import TypeAlias
-from lib.ai_chat import AIChatHandler
 
 MULTIPROCESSING_LIST_TYPE: TypeAlias = Sequence[model.Challenge]
 
 logger = logging.getLogger(__name__)
+
+MAX_LICHESS_CHAT_CHARS = 140
+
+
+def _lichess_safe_message(text: str, limit: int = MAX_LICHESS_CHAT_CHARS) -> str:
+    """
+    Make text safe for Lichess chat:
+    - collapse whitespace/newlines
+    - hard cap to `limit`
+    - prefer cutting at word boundary
+    - append ellipsis if truncated
+    """
+    if not text:
+        return ""
+
+    clean = " ".join(str(text).split())
+    if len(clean) <= limit:
+        return clean
+
+    # Reserve 1 char for ellipsis
+    hard = max(0, limit - 1)
+    cut = clean[:hard]
+
+    # Try to cut at a word boundary (don’t cut too early)
+    last_space = cut.rfind(" ")
+    if last_space >= 30:
+        cut = cut[:last_space]
+
+    return cut.rstrip() + "…"
 
 
 class ChatLine:
@@ -30,7 +61,7 @@ class ChatLine:
 class Conversation:
     """Enables the bot to communicate with its opponent and the spectators."""
 
-    def __init__(self, game: model.Game, engine: EngineWrapper, li: Lichess, version: str,
+    def __init__(self, game: model.Game, engine: EngineWrapper, config: Configuration, li: Lichess, version: str,
                  challenge_queue: MULTIPROCESSING_LIST_TYPE) -> None:
         """
         Communication between lichess-bot and the game chats.
@@ -43,11 +74,12 @@ class Conversation:
         """
         self.game = game
         self.engine = engine
+        self.config = config
         self.li = li
         self.version = version
         self.challengers = challenge_queue
         self.messages: list[ChatLine] = []
-        self.ai_chat = AIChatHandler(game, engine)
+        self.ai_chat = AIChatHandler(game, engine, self.config)
 
     command_prefix = "!"
 
@@ -108,6 +140,8 @@ class Conversation:
         :param line: Information about the original message that we reply to.
         :param reply: The reply to send.
         """
+        reply = _lichess_safe_message(reply)
+        if not reply: return
         logger.info(f"*** {self.game.url()} [{line.room}] {self.game.username}: {reply}")
         self.li.chat(self.game.id, line.room, reply)
 
