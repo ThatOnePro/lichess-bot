@@ -121,14 +121,14 @@ def watch_control_stream(control_queue: CONTROL_QUEUE_TYPE, li: lichess.Lichess)
     error = None
     while not stop.terminated:
         try:
-            response = li.get_event_stream()
-            lines = response.iter_lines()
-            for line in lines:
-                if line:
-                    event = json.loads(line.decode("utf-8"))
-                    control_queue.put_nowait(event)
-                else:
-                    control_queue.put_nowait({"type": "ping"})
+            with li.get_event_stream() as response:
+                lines = response.iter_lines()
+                for line in lines:
+                    if line:
+                        event = json.loads(line.decode("utf-8"))
+                        control_queue.put_nowait(event)
+                    else:
+                        control_queue.put_nowait({"type": "ping"})
         except Exception:
             error = traceback.format_exc()
             break
@@ -673,117 +673,106 @@ def play_game(li: lichess.Lichess,
     thread_logging_configurer(logging_queue)
     logger = logging.getLogger(__name__)
 
-    response = li.get_game_stream(game_id)
-    lines = response.iter_lines()
+    with li.get_game_stream(game_id) as response:
+        lines = response.iter_lines()
 
-    # Initial response of stream will be the full game info. Store it.
-    initial_state = json.loads(next(lines).decode("utf-8"))
-    logger.debug(f"Initial state: {initial_state}")
-    abort_time = seconds(config.abort_time)
-    game = model.Game(initial_state, user_profile["username"], li.baseUrl, abort_time)
+        # Initial response of stream will be the full game info. Store it.
+        initial_state = json.loads(next(lines).decode("utf-8"))
+        logger.debug(f"Initial state: {initial_state}")
+        abort_time = seconds(config.abort_time)
+        game = model.Game(initial_state, user_profile["username"], li.baseUrl, abort_time)
 
-    with engine_wrapper.create_engine(config, game) as engine:
-        engine.get_opponent_info(game)
-        logger.debug(f"The engine for game {game_id} has pid={engine.get_pid()}")
-        conversation = Conversation(game, engine, config, li, __version__, challenge_queue)
+        with engine_wrapper.create_engine(config, game) as engine:
+            engine.get_opponent_info(game)
+            logger.debug(f"The engine for game {game_id} has pid={engine.get_pid()}")
+            conversation = Conversation(game, engine, config, li, __version__, challenge_queue)
 
-        logger.info(f"+++ {game}")
+            logger.info(f"+++ {game}")
 
-        is_correspondence = game.speed == "correspondence"
-        correspondence_cfg = config.correspondence
-        correspondence_move_time = seconds(correspondence_cfg.move_time)
-        correspondence_disconnect_time = seconds(correspondence_cfg.disconnect_time)
+            is_correspondence = game.speed == "correspondence"
+            correspondence_cfg = config.correspondence
+            correspondence_move_time = seconds(correspondence_cfg.move_time)
+            correspondence_disconnect_time = seconds(correspondence_cfg.disconnect_time)
 
-        engine_cfg = config.engine
-        ponder_cfg = correspondence_cfg if is_correspondence else engine_cfg
-        can_ponder = ponder_cfg.uci_ponder or ponder_cfg.ponder
-        move_overhead = msec(config.move_overhead)
-        delay = msec(config.rate_limiting_delay)
+            engine_cfg = config.engine
+            ponder_cfg = correspondence_cfg if is_correspondence else engine_cfg
+            can_ponder = ponder_cfg.uci_ponder or ponder_cfg.ponder
+            move_overhead = msec(config.move_overhead)
+            delay = msec(config.rate_limiting_delay)
 
-        takebacks_accepted = read_takeback_record(game)
-        max_takebacks_accepted = config.max_takebacks_accepted
+            takebacks_accepted = read_takeback_record(game)
+            max_takebacks_accepted = config.max_takebacks_accepted
 
-        keyword_map: defaultdict[str, str] = defaultdict(str, me=game.me.name, opponent=game.opponent.name)
-        hello = get_greeting("hello", config.greeting, keyword_map)
-        goodbye = get_greeting("goodbye", config.greeting, keyword_map)
-        hello_spectators = get_greeting("hello_spectators", config.greeting, keyword_map)
-        goodbye_spectators = get_greeting("goodbye_spectators", config.greeting, keyword_map)
+            keyword_map: defaultdict[str, str] = defaultdict(str, me=game.me.name, opponent=game.opponent.name)
+            hello = get_greeting("hello", config.greeting, keyword_map)
+            goodbye = get_greeting("goodbye", config.greeting, keyword_map)
+            hello_spectators = get_greeting("hello_spectators", config.greeting, keyword_map)
+            goodbye_spectators = get_greeting("goodbye_spectators", config.greeting, keyword_map)
 
-        disconnect_time = correspondence_disconnect_time if not game.state.get("moves") else seconds(0)
-        prior_game = None
-        board = chess.Board()
-        game_stream = itertools.chain([json.dumps(game.state).encode("utf-8")], lines)
-        quit_after_all_games_finish = config.quit_after_all_games_finish
-        
-        # Queue voor updates die de engine moet verwerken
-        update_queue = queue.Queue()
-        
-        def stream_processor():
-            """Thread die de stream uitleest en chat direct verwerkt."""
-            nonlocal stay_in_game
-            try:
-                for binary_chunk in game_stream:
-                    if stop.terminated and not quit_after_all_games_finish or stop.force_quit:
-                        break
-                        
-                    upd = cast(GameEventType, json.loads(binary_chunk.decode("utf-8"))) if binary_chunk else {}
-                    if not upd:
-                        # Ping versturen naar de hoofdthread om blokkade op te heffen
-                        update_queue.put({"type": "ping"})
-                        continue
-                        
-                    u_type = upd.get("type")
-                    if u_type == "chatLine":
-                        conversation.react(ChatLine(upd))
-                    else:
-                        # Stuur gameState en andere relevante events naar de engine loop
-                        update_queue.put(upd)
-                        if u_type == "gameState" and is_game_over_state(upd):
+            disconnect_time = correspondence_disconnect_time if not game.state.get("moves") else seconds(0)
+            prior_game = None
+            board = chess.Board()
+            game_stream = itertools.chain([json.dumps(game.state).encode("utf-8")], lines)
+            quit_after_all_games_finish = config.quit_after_all_games_finish
+
+            # Queue voor updates die de engine moet verwerken
+            update_queue = queue.Queue()
+
+            def stream_processor():
+                """Thread die de stream uitleest en chat direct verwerkt."""
+                nonlocal stay_in_game
+                try:
+                    for binary_chunk in game_stream:
+                        if stop.terminated and not quit_after_all_games_finish or stop.force_quit:
                             break
-            except Exception:
-                logger.exception("Error in stream processor thread")
-            finally:
-                update_queue.put(None) # Signaal dat de stream is gestopt
 
-        def is_game_over_state(upd):
-            return upd.get("status") != "started"
+                        upd = cast(GameEventType, json.loads(binary_chunk.decode("utf-8"))) if binary_chunk else {}
+                        if not upd:
+                            # Ping versturen naar de hoofdthread om blokkade op te heffen
+                            update_queue.put({"type": "ping"})
+                            continue
 
-        stay_in_game = True
-        processor_thread = threading.Thread(target=stream_processor, daemon=True)
-        processor_thread.start()
+                        u_type = upd.get("type")
+                        if u_type == "chatLine":
+                            conversation.react(ChatLine(upd))
+                        else:
+                            # Stuur gameState en andere relevante events naar de engine loop
+                            update_queue.put(upd)
+                            if u_type == "gameState" and is_game_over_state(upd):
+                                break
+                except Exception:
+                    logger.exception("Error in stream processor thread")
+                finally:
+                    update_queue.put(None) # Signaal dat de stream is gestopt
 
-        while stay_in_game and (not stop.terminated or quit_after_all_games_finish) and not stop.force_quit:
-            move_attempted = False
-            try:
-                # Wacht op de volgende relevante update van de stream_processor
-                upd = update_queue.get(timeout=1.0)
-                if upd is None:
-                    stay_in_game = False
-                    continue
-                    
-                u_type = upd.get("type", "ping")
-                if u_type == "gameState":
-                    game.state = upd
-                    board = setup_board(game)
-                    takeback_field = game.state.get("btakeback") if game.is_white else game.state.get("wtakeback")
+            def is_game_over_state(upd):
+                return upd.get("status") != "started"
 
-                    if game_changed(game, prior_game):
-                        current_moves = game.state["moves"].split()
-                        prior_moves = prior_game.state["moves"].split() if prior_game else []
-                        if len(current_moves) > len(prior_moves):
-                            hook_board = initial_board(game)
-                            for move_uci in prior_moves:
-                                try:
-                                    hook_board.push_uci(move_uci)
-                                except ValueError:
-                                    logger.exception(
-                                        f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
-                                    )
-                                    break
+            stay_in_game = True
+            processor_thread = threading.Thread(target=stream_processor, daemon=True)
+            processor_thread.start()
 
-                            if len(hook_board.move_stack) == len(prior_moves):
-                                for move_uci in current_moves[len(prior_moves):]:
-                                    mover_color = "white" if hook_board.turn == chess.WHITE else "black"
+            while stay_in_game and (not stop.terminated or quit_after_all_games_finish) and not stop.force_quit:
+                move_attempted = False
+                try:
+                    # Wacht op de volgende relevante update van de stream_processor
+                    upd = update_queue.get(timeout=1.0)
+                    if upd is None:
+                        stay_in_game = False
+                        continue
+
+                    u_type = upd.get("type", "ping")
+                    if u_type == "gameState":
+                        game.state = upd
+                        board = setup_board(game)
+                        takeback_field = game.state.get("btakeback") if game.is_white else game.state.get("wtakeback")
+
+                        if game_changed(game, prior_game):
+                            current_moves = game.state["moves"].split()
+                            prior_moves = prior_game.state["moves"].split() if prior_game else []
+                            if len(current_moves) > len(prior_moves):
+                                hook_board = initial_board(game)
+                                for move_uci in prior_moves:
                                     try:
                                         hook_board.push_uci(move_uci)
                                     except ValueError:
@@ -791,54 +780,65 @@ def play_game(li: lichess.Lichess,
                                             f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
                                         )
                                         break
-                                    after_move(game, hook_board, move_uci, mover_color, conversation)
 
-                    if not is_game_over(game) and is_engine_move(game, prior_game, board):
-                        disconnect_time = correspondence_disconnect_time
-                        say_hello(conversation, hello, hello_spectators, board)
-                        setup_timer = Timer()
-                        print_move_number(board)
-                        move_attempted = True
-                        engine.play_move(board,
-                                         game,
-                                         li,
-                                         setup_timer,
-                                         move_overhead,
-                                         can_ponder,
-                                         is_correspondence,
-                                         correspondence_move_time,
-                                         engine_cfg,
-                                         fake_think_time(config, board, game))
-                        time.sleep(to_seconds(delay))
-                    elif is_game_over(game):
-                        tell_user_game_result(game, board)
-                        engine.send_game_result(game, board)
-                        conversation.send_message("player", goodbye)
-                        conversation.send_message("spectator", goodbye_spectators)
-                    elif (takeback_field
-                            and not bot_to_move(game, board)
-                            and li.accept_takeback(game.id, takebacks_accepted < max_takebacks_accepted)):
-                        takebacks_accepted += 1
-                        record_takeback(game, takebacks_accepted)
-                        engine.discard_last_move_commentary()
+                                if len(hook_board.move_stack) == len(prior_moves):
+                                    for move_uci in current_moves[len(prior_moves):]:
+                                        mover_color = "white" if hook_board.turn == chess.WHITE else "black"
+                                        try:
+                                            hook_board.push_uci(move_uci)
+                                        except ValueError:
+                                            logger.exception(
+                                                f"Ignoring illegal move {move_uci} on board {hook_board.fen()}"
+                                            )
+                                            break
+                                        after_move(game, hook_board, move_uci, mover_color, conversation)
 
-                    wbtime = upd.get(engine_wrapper.wbtime(board), 0)
-                    wbinc = upd.get(engine_wrapper.wbinc(board), 0)
-                    terminate_time = msec(wbtime) + msec(wbinc) + seconds(60)
-                    game.ping(abort_time, terminate_time, disconnect_time)
-                    prior_game = copy.deepcopy(game)
-                elif u_type == "ping" and should_exit_game(board, game, prior_game, li, is_correspondence):
-                    stay_in_game = False
-            except queue.Empty:
-                # Geen update ontvangen, check of we moeten afsluiten
-                if should_exit_game(board, game, prior_game, li, is_correspondence):
-                    stay_in_game = False
-            except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError) as e:
-                stay_in_game = move_attempted or game_is_active(li, game.id)
+                        if not is_game_over(game) and is_engine_move(game, prior_game, board):
+                            disconnect_time = correspondence_disconnect_time
+                            say_hello(conversation, hello, hello_spectators, board)
+                            setup_timer = Timer()
+                            print_move_number(board)
+                            move_attempted = True
+                            engine.play_move(board,
+                                             game,
+                                             li,
+                                             setup_timer,
+                                             move_overhead,
+                                             can_ponder,
+                                             is_correspondence,
+                                             correspondence_move_time,
+                                             engine_cfg,
+                                             fake_think_time(config, board, game))
+                            time.sleep(to_seconds(delay))
+                        elif is_game_over(game):
+                            tell_user_game_result(game, board)
+                            engine.send_game_result(game, board)
+                            conversation.send_message("player", goodbye)
+                            conversation.send_message("spectator", goodbye_spectators)
+                        elif (takeback_field
+                                and not bot_to_move(game, board)
+                                and li.accept_takeback(game.id, takebacks_accepted < max_takebacks_accepted)):
+                            takebacks_accepted += 1
+                            record_takeback(game, takebacks_accepted)
+                            engine.discard_last_move_commentary()
 
-        pgn_record = try_get_pgn_game_record(li, config, game, board, engine)
-    final_queue_entries(control_queue, correspondence_queue, game, is_correspondence, pgn_record, pgn_queue)
-    delete_takeback_record(game)
+                        wbtime = upd.get(engine_wrapper.wbtime(board), 0)
+                        wbinc = upd.get(engine_wrapper.wbinc(board), 0)
+                        terminate_time = msec(wbtime) + msec(wbinc) + seconds(60)
+                        game.ping(abort_time, terminate_time, disconnect_time)
+                        prior_game = copy.deepcopy(game)
+                    elif u_type == "ping" and should_exit_game(board, game, prior_game, li, is_correspondence):
+                        stay_in_game = False
+                except queue.Empty:
+                    # Geen update ontvangen, check of we moeten afsluiten
+                    if should_exit_game(board, game, prior_game, li, is_correspondence):
+                        stay_in_game = False
+                except (HTTPError, ReadTimeout, RemoteDisconnected, ChunkedEncodingError, RequestsConnectionError) as e:
+                    stay_in_game = move_attempted or game_is_active(li, game.id)
+
+            pgn_record = try_get_pgn_game_record(li, config, game, board, engine)
+        final_queue_entries(control_queue, correspondence_queue, game, is_correspondence, pgn_record, pgn_queue)
+        delete_takeback_record(game)
 
 
 def read_takeback_record(game: model.Game) -> int:
