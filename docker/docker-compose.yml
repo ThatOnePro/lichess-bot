@@ -3,6 +3,7 @@ name: yris-bot
 services:
   llama:
     image: ghcr.io/ggml-org/llama.cpp:server
+    platform: ${PLATFORM:-}
     env_file:
       - .env
     ports:
@@ -20,6 +21,7 @@ services:
     restart: unless-stopped
 
   python-bot:
+    platform: ${PLATFORM:-}
     build:
       context: ..
       dockerfile: docker/Dockerfile
