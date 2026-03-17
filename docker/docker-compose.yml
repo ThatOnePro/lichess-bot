@@ -1,24 +1,24 @@
 name: yris-bot
 
 services:
-  llama:
-    image: ghcr.io/ggml-org/llama.cpp:server
-    platform: ${PLATFORM:-}
-    env_file:
-      - .env
-    ports:
-      - "5555:8080"
-    volumes:
-      - hf-cache:/root/.cache   # persists downloads between restarts
-    command:
-      [
-        "-hf", "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
-        "--host", "0.0.0.0",
-        "--port", "8080",
-        "-c", "2048",
-        "-fa", "on"
-      ]
-    restart: unless-stopped
+#  llama:
+#    image: ghcr.io/ggml-org/llama.cpp:server
+#    platform: ${PLATFORM:-}
+#    env_file:
+#      - .env
+#    ports:
+#      - "5555:8080"
+#    volumes:
+#      - hf-cache:/root/.cache   # persists downloads between restarts
+#    command:
+#      [
+#        "-hf", "ggml-org/gemma-3-1b-it-GGUF:Q4_K_M",
+#        "--host", "0.0.0.0",
+#        "--port", "8080",
+#        "-c", "2048",
+#        "-fa", "on"
+#      ]
+#    restart: unless-stopped
 
   python-bot:
     platform: ${PLATFORM:-}
@@ -26,15 +26,15 @@ services:
       context: ..
       dockerfile: docker/custom.Dockerfile
       args:
-        VARIANT: ".14-slim"
+        VARIANT: ".13-slim"
     environment:
       OPTIONS: ""
     env_file:
       - .env
     volumes:
       - ..:/lichess-bot/config
-    depends_on:
-      - llama
+#    depends_on:
+#      - llama
     restart: unless-stopped
 
 volumes:
