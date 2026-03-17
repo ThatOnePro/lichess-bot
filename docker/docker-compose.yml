@@ -26,7 +26,7 @@ services:
       context: ..
       dockerfile: docker/custom.Dockerfile
       args:
-        VARIANT: ".13-slim"
+        VARIANT: ".13"
     environment:
       OPTIONS: ""
     env_file:
