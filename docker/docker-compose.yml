@@ -1,9 +1,17 @@
+name: yris-bot
+
 include:
   - path: ../ai_chat/docker-compose.yml
 
 services:
-  lichess-bot:
-    image: lichessbotdevs/lichess-bot
+  python-bot:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        VARIANT: ".14-slim"
+    environment:
+      OPTIONS: ""
     volumes:
       - ..:/lichess-bot/config
     depends_on:
