@@ -40,16 +40,18 @@ class LlamaCppClient:
 
         return self.connected
 
-    def chat(self, messages: List[Dict[str, str]]) -> str:
+    def chat(self, messages: List[Dict[str, str]], max_tokens: Optional[int] = None) -> str:
         """
         Send a chat completion request and return the assistant's reply.
         Returns an empty string on any failure.
+
+        :param max_tokens: Override the default max_tokens from settings (e.g. for coaching replies).
         """
         payload = {
             "model": self.model_id or self.settings.model or "gpt-3.5-turbo",
             "messages": messages,
             "temperature": float(self.settings.temperature),
-            "max_tokens": int(self.settings.max_tokens),
+            "max_tokens": int(max_tokens if max_tokens is not None else self.settings.max_tokens),
             "stream": False,
         }
         try:

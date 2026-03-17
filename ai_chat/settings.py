@@ -16,4 +16,5 @@ class LlamaCppChatSettings:
     timeout_seconds: int = 20
     max_history_messages: int = 10
     max_tokens: int = 80
+    coaching_max_tokens: int = 350
     temperature: float = 0.7
