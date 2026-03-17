@@ -24,7 +24,7 @@ services:
     platform: ${PLATFORM:-}
     build:
       context: ..
-      dockerfile: docker/Dockerfile
+      dockerfile: docker/custom.Dockerfile
       args:
         VARIANT: ".14-slim"
     environment:
