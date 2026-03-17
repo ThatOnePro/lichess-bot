@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 from typing import Callable, Optional
 
@@ -6,12 +7,40 @@ import chess
 
 from lib import model
 from lib.engine_wrapper import EngineWrapper
+from .context_provider import build_coaching_context, build_trash_talk_context, game_phase
 from .history import ChatHistory
 from .move_describer import describe_move
 from .server_client import LlamaCppClient
 from .settings import LlamaCppChatSettings
 
 logger = logging.getLogger(__name__)
+
+_LICHESS_CHAT_LIMIT = 140
+
+
+def _split_for_chat(text: str, limit: int = _LICHESS_CHAT_LIMIT) -> list[str]:
+    """
+    Split a long reply into chunks that fit within Lichess's chat message limit.
+    Splits at sentence boundaries so each chunk reads naturally.
+    """
+    raw_sentences = re.split(r'(?<=[.!?])\s+', text.strip())
+    chunks: list[str] = []
+    current_chunk = ""
+    for sentence in raw_sentences:
+        candidate = (current_chunk + " " + sentence).strip() if current_chunk else sentence
+        if len(candidate) <= limit:
+            current_chunk = candidate
+        else:
+            if current_chunk:
+                chunks.append(current_chunk)
+            # If a single sentence exceeds the limit, hard-cut it
+            while len(sentence) > limit:
+                chunks.append(sentence[:limit])
+                sentence = sentence[limit:]
+            current_chunk = sentence
+    if current_chunk:
+        chunks.append(current_chunk)
+    return chunks if chunks else [text[:limit]]
 
 
 class AIChatHandler:
@@ -40,12 +69,16 @@ class AIChatHandler:
             timeout_seconds=cfg("timeout_seconds", 20),
             max_history_messages=cfg("max_history_messages", 10),
             max_tokens=cfg("max_tokens", 80),
+            coaching_max_tokens=cfg("coaching_max_tokens", 350),
             temperature=cfg("temperature", 0.7),
         )
 
         self._enabled = settings.enabled
         self._client = LlamaCppClient(settings)
         self._history = ChatHistory(settings.max_history_messages)
+        self._coaching_max_tokens = settings.coaching_max_tokens
+        self._latest_board: Optional[chess.Board] = None
+        self._last_player_move_desc: Optional[str] = None
 
         if not self._enabled:
             return
@@ -86,7 +119,10 @@ class AIChatHandler:
             self._pending_player_move = (board.copy(), move_uci)
             return
 
-        # Bot just moved — we now have a fresh engine evaluation to compare against
+        # Bot just moved — keep the latest board for coaching context
+        self._latest_board = board.copy()
+
+        # We now have a fresh engine evaluation to compare against the player's last move
         if len(self.engine.scores) < 2 or self._pending_player_move is None:
             return
 
@@ -105,6 +141,9 @@ class AIChatHandler:
         # Positive delta = bot gained (player blundered); negative = bot lost (player played well)
         delta = curr_cp - prev_cp
 
+        if abs(delta) < 75:
+            return  # Move was not notable enough to comment on
+
         # player_board is the state AFTER the player moved; pop it to describe the piece used
         pre_move_board = player_board.copy()
         try:
@@ -113,50 +152,21 @@ class AIChatHandler:
             pre_move_board = player_board
 
         move_desc = describe_move(pre_move_board, player_uci)
-        eval_now = f"{curr_cp / 100:+.2f}"
-
-        if delta >= 150:
-            context = (
-                f"Your opponent just played {move_desc} and blundered, handing you +{delta / 100:.1f} pawns "
-                f"(eval now {eval_now}). Mock them specifically about what they just did — "
-                "e.g. if they dropped a queen, say something about the queen. Be witty, not mean."
-            )
-        elif delta <= -100:
-            context = (
-                f"Your opponent just played {move_desc}, a strong move that cost you {abs(delta) / 100:.1f} pawns "
-                f"(eval now {eval_now} for you). Acknowledge specifically what they did, but stay confident."
-            )
-        else:
-            return
+        self._last_player_move_desc = move_desc
+        context = build_trash_talk_context(self.game, self.engine, board, move_desc, delta)
 
         threading.Thread(target=self._generate_move_comment, args=(context, send_message), daemon=True).start()
 
     # Internals
 
-    def _game_context(self) -> str:
-        """Build the personality and game-state block injected into every system prompt."""
-        eval_str, winrate_str = "unknown", "unknown"
-        if self.engine.scores:
-            pov = self.engine.scores[-1]
-            try:
-                cp = pov.relative.score(mate_score=3000)
-                eval_str = f"{cp / 100:+.2f}" if cp is not None else "unknown"
-            except Exception:
-                pass
-            try:
-                ply = len(self.engine.scores) * 2
-                winrate_str = f"{round(pov.wdl(model='sf', ply=ply).relative.expectation() * 100, 1)}%"
-            except Exception:
-                pass
-
+    def _trash_talk_personality(self) -> str:
+        """Build the personality block injected as the system prompt for move comments."""
         move_num = len(self.engine.scores)
-        phase = "opening" if move_num < 7 else "middlegame" if move_num < 25 else "endgame"
-
+        phase = game_phase(move_num)
         return (
             f"You are {self.game.me.name}, a cocky, sharp-tongued chess bot on Lichess "
             f"playing as {self.game.my_color} against {self.game.opponent.name}. "
             f"It is the {phase} (roughly move {move_num}). "
-            f"Engine eval: {eval_str} pawns (your perspective). Win probability: {winrate_str}. "
             "Personality: confident, a little arrogant when winning, darkly amused by mistakes — "
             "grandmaster trash talk, never outright insults. "
             "Rules: ONE punchy sentence, hard cap 140 characters, no hashtags, no analysis notation."
@@ -166,14 +176,12 @@ class AIChatHandler:
         """Generate a reply to a player chat message (runs in a background thread)."""
         try:
             self._history.add("user", user_text)
-            stats = self.engine.get_stats()
-            system_prompt = (
-                f"{self._game_context()} "
-                f"Current stats: {', '.join(stats) if stats else 'none'}. "
-                "Be helpful if the user asks for advice."
+            board = self._latest_board or chess.Board()
+            coaching_ctx = build_coaching_context(
+                self.game, self.engine, board, self._last_player_move_desc
             )
-            messages = [{"role": "system", "content": system_prompt}] + self._history.messages
-            reply = self._client.chat(messages)
+            messages = [{"role": "system", "content": coaching_ctx}] + self._history.messages
+            reply = self._client.chat(messages, max_tokens=self._coaching_max_tokens)
 
             if not reply:
                 self._history.rollback_last_user()
@@ -181,8 +189,9 @@ class AIChatHandler:
                 return
 
             self._history.add("assistant", reply)
-            callback(reply)
             logger.info("AI response: %s", reply)
+            for chunk in _split_for_chat(reply):
+                callback(chunk)
 
         except Exception:
             logger.error("Error during AI generation", exc_info=True)
@@ -193,7 +202,7 @@ class AIChatHandler:
         """Generate and send an unprompted comment after a notable move (background thread)."""
         try:
             messages = [
-                {"role": "system", "content": self._game_context()},
+                {"role": "system", "content": self._trash_talk_personality()},
                 {"role": "user", "content": context},
             ]
             reply = self._client.chat(messages)
