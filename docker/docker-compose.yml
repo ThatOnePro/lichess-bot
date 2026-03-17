@@ -1,0 +1,11 @@
+include:
+  - path: ../ai_chat/docker-compose.yml
+
+services:
+  lichess-bot:
+    image: lichessbotdevs/lichess-bot
+    volumes:
+      - ..:/lichess-bot/config
+    depends_on:
+      - llama
+    restart: unless-stopped
