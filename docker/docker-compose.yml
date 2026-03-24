@@ -3,6 +3,7 @@ name: yris-bot
 services:
 #  llama:
 #    image: ghcr.io/ggml-org/llama.cpp:server
+#    restart: unless-stopped
 #    platform: ${PLATFORM:-}
 #    env_file:
 #      - .env
@@ -18,24 +19,24 @@ services:
 #        "-c", "2048",
 #        "-fa", "on"
 #      ]
-#    restart: unless-stopped
 
   python-bot:
     platform: ${PLATFORM:-}
     build:
-      context: ..
-      dockerfile: docker/custom.Dockerfile
+      context: .
+      dockerfile: custom.Dockerfile
       args:
         VARIANT: ".13"
+    restart: unless-stopped
     environment:
       OPTIONS: ""
     env_file:
-      - .env
+      - .env # .env file inside the /docker/ folder, used to specify the PLATFORM variable if needed to be overridden
     volumes:
-      - ..:/lichess-bot/config
+      - ../config.yml:/lichess-bot/config.yml
+      - ../engines:/lichess-bot/engines
 #    depends_on:
 #      - llama
-    restart: unless-stopped
 
-volumes:
-  hf-cache:
+#volumes:
+#  hf-cache:
